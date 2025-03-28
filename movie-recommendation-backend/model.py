@@ -88,3 +88,4 @@ def main():
 if __name__ == '__main__':
     movies, cosine_sim = main()
     print(get_recommendations('The Dark Knight Rises', cosine_sim, movies))
+    
