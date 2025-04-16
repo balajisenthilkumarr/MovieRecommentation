@@ -5,12 +5,13 @@ import MovieGrid from "../components/MovieGrid";
 import SearchBar from "../components/SearchBar";
 import LoadingSpinner from "../components/LoadingSpinner";
 import axios from "axios";
-import { Film, Heart, BookMarked, User, Menu, X, Bell } from "lucide-react";
+import { Film, Heart, BookMarked, User, Menu, X, Bell, LogOut } from "lucide-react"; // Added LogOut icon
 import MovieList from "../components/MovieList";
 import { useNavigate } from "react-router-dom";
+import ChatBat from "../components/MovieChatbot";
 
-// Navbar Component (unchanged)
-const Navbar = () => {
+// Navbar Component (updated)
+const Navbar = ({ user, onLogout, userLoading }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [isScrolled, setIsScrolled] = useState(false);
 
@@ -42,10 +43,21 @@ const Navbar = () => {
               <Bell className="w-5 h-5" />
               <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
             </button>
+            {/* Profile Section with Username */}
             <div className="flex items-center space-x-3 text-gray-300 hover:text-white cursor-pointer">
               <div className="w-8 h-8 rounded-full bg-gradient-to-r from-blue-500 to-purple-500 flex items-center justify-center">
                 <User className="w-5 h-5 text-white" />
               </div>
+              <span className="text-sm font-medium">
+                {userLoading ? "Loading..." : user?.username || "Guest"}
+              </span>
+              {/* Logout Button */}
+              <button
+                onClick={onLogout}
+                className="ml-2 p-2 text-gray-400 hover:text-white transition-colors"
+              >
+                <LogOut className="w-5 h-5" />
+              </button>
             </div>
           </div>
           <div className="md:hidden">
@@ -71,6 +83,7 @@ const Navbar = () => {
               <MobileNavLink text="Watchlist" />
               <MobileNavLink text="Collections" />
               <MobileNavLink text="Profile" />
+              <MobileNavLink text="Logout" onClick={onLogout} /> {/* Added Logout for mobile */}
             </div>
           </motion.div>
         )}
@@ -91,9 +104,10 @@ const NavLink = ({ icon, text, active }) => (
   </a>
 );
 
-const MobileNavLink = ({ text, active }) => (
+const MobileNavLink = ({ text, active, onClick }) => (
   <a
     href="#"
+    onClick={onClick} // Handle click for logout
     className={`block px-3 py-2 rounded-lg text-base font-medium transition-colors ${
       active ? "text-white bg-gray-800" : "text-gray-400 hover:text-white hover:bg-gray-800/50"
     }`}
@@ -116,6 +130,8 @@ const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearching, setIsSearching] = useState(false);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [user, setUser] = useState(null); // State to hold user data
+  const [userLoading, setUserLoading] = useState(true); // State to track user data loading
 
   // Get userId from localStorage
   const userId = parseInt(localStorage.getItem("userId"));
@@ -126,8 +142,31 @@ const HomePage = () => {
     if (!userId) {
       console.log("No userId found in localStorage, redirecting to login");
       navigate("/login");
+    } else {
+      fetchUserProfile(); // Fetch user profile when userId is available
     }
   }, [userId, navigate]);
+
+  // Fetch user profile
+  const fetchUserProfile = async () => {
+    setUserLoading(true); // Start loading
+    try {
+      const response = await axios.get(`http://localhost:5000/api/user/${userId}`);
+      console.log(response.data,"usedata")
+      setUser(response.data); // Assuming API returns { id, username, ... }
+    } catch (err) {
+      setError("Failed to fetch user profile");
+      console.error("Error fetching user profile:", err.response?.data || err.message);
+    } finally {
+      setUserLoading(false); // End loading
+    }
+  };
+
+  // Logout handler
+  const handleLogout = () => {
+    localStorage.removeItem("userId"); // Clear userId from localStorage
+    navigate("/login"); // Redirect to login page
+  };
 
   useEffect(() => {
     const handleScroll = () => {
@@ -145,6 +184,7 @@ const HomePage = () => {
       setLoading(true);
       console.log(`Fetching collaborative recommendations for userId: ${userId}`);
       const response = await axios.get(`http://localhost:5000/api/collaborative_recommendations/${userId}`);
+      console.log(response.data.recommendations, "collaborativeeeeeeeeee");
       setCollaborativeMovies(response.data.recommendations);
     } catch (err) {
       setError("Failed to fetch collaborative recommendations");
@@ -282,9 +322,10 @@ const HomePage = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-gray-900 to-black">
-      <Navbar />
+      <Navbar user={user} onLogout={handleLogout} userLoading={userLoading} />
 
-      <main className="container mx-auto px-0 pt-24 pb-8">        {/* Search Bar Section */}
+      <main className="container mx-auto px-0 pt-24 pb-8">
+        {/* Search Bar Section */}
         <motion.div
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -315,7 +356,7 @@ const HomePage = () => {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.5 }}
-          className="mb-12" // Slightly larger margin to separate sections
+          className="mb-12"
         >
           <h2 className="text-3xl font-bold text-white mb-6">Initial Recommendations</h2>
           <MovieList />
@@ -325,7 +366,6 @@ const HomePage = () => {
         <AnimatePresence mode="wait">
           {isSearching && (
             <motion.div
-
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -356,7 +396,7 @@ const HomePage = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5 }}
-            className="mb-12" // Consistent margin with other sections
+            className="mb-12"
           >
             <h2 className="text-3xl font-bold text-white mb-6">Movies You Might Like (Collaborative)</h2>
             <MovieGrid movies={collaborativeMovies.slice(0, 8)} />
@@ -369,7 +409,7 @@ const HomePage = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.5 }}
-            className="mb-12" // Consistent margin with other sections
+            className="mb-12"
           >
             <h2 className="text-3xl font-bold text-white mb-6">Similar Movies (Content-Based)</h2>
             <MovieGrid movies={contentBasedMovies.slice(0, 8)} />
@@ -435,6 +475,7 @@ const HomePage = () => {
           )}
         </AnimatePresence>
       </main>
+      <ChatBat />
     </div>
   );
 };

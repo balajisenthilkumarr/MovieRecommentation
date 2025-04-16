@@ -5,6 +5,7 @@ import HomePage from "./pages/HomePage";
 import MovieDetails from "./pages/MovieDetails";
 import LoginPage from "./pages/LoginPage";
 import AdminDashboard from "./pages/AdminDashboard"
+import RegisterPage from "./pages/RegisterPage";
 import axios from "axios";
 
 function App() {
@@ -35,6 +36,7 @@ function App() {
           element={<HomePage userPreferences={userPreferences} />}
         />
         <Route path="/login" element={<LoginPage />} />
+        <Route path="/register" element={<RegisterPage />} />
         <Route path="/movie/:id" element={<MovieDetails />} />
         <Route path="/admin" element={<AdminDashboard />} />
       </Routes>

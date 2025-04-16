@@ -1,12 +1,13 @@
 // src/pages/LoginPage.js
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom"; // Add Link for navigation
 import { motion } from "framer-motion";
 import axios from "axios";
 
 const LoginPage = () => {
   const [username, setUsername] = useState("");
-  const [userId, setUserId] = useState(""); // Add userId state
+  const [userId, setUserId] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState(null);
   const navigate = useNavigate();
 
@@ -20,20 +21,25 @@ const LoginPage = () => {
         return;
       }
 
-      // Store the userId in localStorage
-      localStorage.setItem("userId", parsedUserId.toString());
-      console.log(`Logging in with username: ${username}, userId: ${parsedUserId}`);
-
-      // Save the user to the backend
-      await axios.post("http://localhost:5000/api/register_user", {
-        userId: parsedUserId,
+      // Authenticate the user using the /api/login endpoint
+      const response = await axios.post("http://localhost:5000/api/login", {
         username,
+        password,
       });
 
-      // Navigate to the OnboardingPage after successful login
-      navigate("/preference"); // Changed to /onboarding for consistency
+      // Store user data in localStorage
+      const user = response.data.user;
+      localStorage.setItem("userId", parsedUserId.toString());
+      localStorage.setItem("user", JSON.stringify(user));
+
+      // Redirect based on role
+      if (user.role === "admin") {
+        navigate("/admin");
+      } else {
+        navigate("/preference");
+      }
     } catch (err) {
-      setError("Failed to log in");
+      setError(err.response?.data?.error || "Failed to log in");
       console.error("Login error:", err);
     }
   };
@@ -75,6 +81,17 @@ const LoginPage = () => {
               required
             />
           </div>
+          <div className="mb-4">
+            <label className="block text-gray-300 mb-2">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full bg-gray-700 text-white p-2 rounded"
+              placeholder="Enter your password"
+              required
+            />
+          </div>
           <button
             type="submit"
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"
@@ -82,6 +99,14 @@ const LoginPage = () => {
             Login
           </button>
         </form>
+        <div className="mt-4 text-center">
+          <p className="text-gray-400">
+            Don't have an account?{" "}
+            <Link to="/register" className="text-blue-500 hover:underline">
+              Register here
+            </Link>
+          </p>
+        </div>
       </motion.div>
     </div>
   );

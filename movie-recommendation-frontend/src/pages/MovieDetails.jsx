@@ -7,8 +7,6 @@ import MovieGrid from "../components/MovieGrid";
 import { ArrowLeft, Star, Calendar, Globe } from "lucide-react";
 import axios from "axios";
 
-
-
 const MovieDetails = () => {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -17,7 +15,10 @@ const MovieDetails = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  const userId = 1; // Replace with actual user ID from auth (hardcoded for now)
+  // Dynamically get userId from localStorage
+  const userId = localStorage.getItem("userId")
+    ? parseInt(localStorage.getItem("userId"))
+    : null;
 
   const isValidUrl = (url) => {
     try {
@@ -34,25 +35,46 @@ const MovieDetails = () => {
         setLoading(true);
         setError(null);
 
+        // Check if userId is available
+        if (!userId) {
+          setError("User not logged in. Please log in to see personalized recommendations.");
+          setLoading(false);
+          return;
+        }
+
+        // Validate id parameter
+        if (!id || isNaN(parseInt(id))) {
+          setError("Invalid movie ID.");
+          setLoading(false);
+          return;
+        }
+
         // Fetch movie details
         const movieResponse = await axios.get(`http://localhost:5000/api/movie/${id}`);
         console.log("Movie response:", movieResponse.data);
         setMovie(movieResponse.data);
 
         // Fetch hybrid recommendations
-        const hybridResponse = await axios.get(`http://localhost:5000/api/hybrid_recommendations/${userId}/${id}`);
+        const hybridResponse = await axios.get(
+          `http://localhost:5000/api/hybrid_recommendations/${userId}/${id}`
+        );
         console.log("Hybrid recommendations response:", hybridResponse.data);
-        setHybridResponse(hybridResponse);
+        if (hybridResponse.data && hybridResponse.data.hybrid_recommendations) {
+          setHybridResponse(hybridResponse.data);
+        } else {
+          setHybridResponse({ hybrid_recommendations: { collaborative: [], content_based: [] } });
+          console.warn("Hybrid response structure invalid, using empty recommendations.");
+        }
       } catch (err) {
-        setError(err.message);
-        console.error("Error fetching data:", err);
+        setError(err.response?.data?.error || err.message || "An error occurred while fetching data.");
+        console.error("Error fetching data:", err.response?.data || err);
       } finally {
         setLoading(false);
       }
     };
 
     fetchData();
-  }, [id]);
+  }, [id, userId]);
 
   if (loading) {
     return (
@@ -68,6 +90,14 @@ const MovieDetails = () => {
         <div className="bg-red-500/10 border border-red-500/20 text-red-500 text-center p-6 rounded-lg max-w-2xl mx-auto">
           <h3 className="text-xl font-semibold mb-2">Error</h3>
           <p>{error}</p>
+          {!userId && (
+            <button
+              onClick={() => navigate("/login")}
+              className="mt-4 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
+            >
+              Go to Login
+            </button>
+          )}
         </div>
       </div>
     );
@@ -242,7 +272,7 @@ const MovieDetails = () => {
         </div>
 
         {/* Recommendations Section */}
-        {hybridResponse && (
+        {hybridResponse && hybridResponse.hybrid_recommendations && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -250,28 +280,30 @@ const MovieDetails = () => {
             className="mt-16"
           >
             {/* Collaborative Recommendations */}
-            {hybridResponse.data.hybrid_recommendations.collaborative.length > 0 && (
-              <>
-                <h2 className="text-3xl font-bold text-white mb-8">Based on Your Ratings</h2>
-                <MovieGrid
-                  movies={hybridResponse.data.hybrid_recommendations.collaborative
-                    .filter((rec) => rec.movie_id !== parseInt(id))
-                    .slice(0, 4)}
-                />
-              </>
-            )}
+            {hybridResponse.hybrid_recommendations.collaborative &&
+              hybridResponse.hybrid_recommendations.collaborative.length > 0 && (
+                <>
+                  <h2 className="text-3xl font-bold text-white mb-8">Based on Your Ratings</h2>
+                  <MovieGrid
+                    movies={hybridResponse.hybrid_recommendations.collaborative
+                      .filter((rec) => rec.movie_id !== parseInt(id))
+                      .slice(0, 10)}
+                  />
+                </>
+              )}
 
             {/* Content-Based Recommendations */}
-            {hybridResponse.data.hybrid_recommendations.content_based.length > 0 && (
-              <>
-                <h2 className="text-3xl font-bold text-white mb-8 mt-12">Similar Movies</h2>
-                <MovieGrid
-                  movies={hybridResponse.data.hybrid_recommendations.content_based
-                    .filter((rec) => rec.movie_id !== parseInt(id))
-                    .slice(0, 4)}
-                />
-              </>
-            )}
+            {hybridResponse.hybrid_recommendations.content_based &&
+              hybridResponse.hybrid_recommendations.content_based.length > 0 && (
+                <>
+                  <h2 className="text-3xl font-bold text-white mb-8 mt-12">Similar Movies</h2>
+                  <MovieGrid
+                    movies={hybridResponse.hybrid_recommendations.content_based
+                      .filter((rec) => rec.movie_id !== parseInt(id))
+                      .slice(0, 10)}
+                  />
+                </>
+              )}
           </motion.div>
         )}
       </motion.div>

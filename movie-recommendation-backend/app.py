@@ -11,8 +11,15 @@ import pickle
 import time
 import threading
 import json
+from pymongo import MongoClient  # Import MongoClient for MongoDB
+from datetime import datetime  # For tracking login timestamps
 import os
 from model import main, get_recommendations
+from transformers import pipeline
+import nltk 
+from sentence_transformers import SentenceTransformer
+from rapidfuzz import process, fuzz
+from transformers import pipeline
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -20,6 +27,51 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "http://localhost:3000"}})
+
+
+try:
+    nltk.data.find("tokenizers/punkt")
+    nltk.data.find("corpora/stopwords")
+    nltk.data.find("corpora/wordnet")
+except LookupError:
+    nltk.download("punkt")
+    nltk.download("stopwords")
+    nltk.download("wordnet")
+
+# Load NLP models (add after data loading in app.py)
+classifier = pipeline("zero-shot-classification")  # For intent detection
+ner_model = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english")  # For entity extraction
+
+# MongoDB setup
+MONGO_URI = "mongodb://localhost:27017"
+client = MongoClient(MONGO_URI)
+db = client["movie_recommendation_db"]  # Database name
+users_collection = db["users"]  # Collection name
+movies_collection=db["movies_collection"]
+
+# Initialize the database with a default admin user if not exists
+def init_db():
+    """Initialize the database with a default admin user."""
+    admin_user = {
+        "id": 1,  # Ensure the id field is present
+        "username": "admin",
+        "password": "admin123",
+        "role": "admin",
+        "last_login": None
+    }
+    if not users_collection.find_one({"username": "admin"}):
+        users_collection.insert_one(admin_user)
+        logger.info("Default admin user created.")
+    else:
+        # Update the existing admin user to ensure it has an id field
+        users_collection.update_one(
+            {"username": "admin"},
+            {"$set": {"id": 1}},
+            upsert=True
+        )
+        logger.info("Ensured admin user has an id field.")
+
+init_db()
 
 # Load data for content-based filtering (TMDB dataset)
 try:
@@ -74,6 +126,9 @@ def create_session():
     return session
 
 session = create_session()
+
+MOVIE_TITLES = movies["title"].tolist()
+
 
 # Global lock for TMDB requests
 tmdb_lock = threading.Lock()
@@ -168,7 +223,7 @@ def map_movielens_to_tmdb(movielens_movie_id):
         logger.error(f"Error mapping MovieLens ID {movielens_movie_id} to TMDB: {e}")
         return None
 
-def get_popular_movies(n=10):
+def get_popular_movies(n=15):
     """Get popular movies based on average ratings from ratings_df."""
     movie_ratings = ratings_df.groupby("movieId")["rating"].agg(["mean", "count"]).reset_index()
     popular_movies = movie_ratings[movie_ratings["count"] > 50].sort_values("mean", ascending=False)
@@ -361,20 +416,305 @@ def save_user_preferences():
     except Exception as e:
         logger.error(f"Error saving user preferences: {e}")
         return jsonify({"error": "Internal server error"}), 500
+# Chatbot Functions
+def extract_genre(message):
+    """Extract genres from the user message."""
+    genres = [
+        "action", "adventure", "animation", "comedy", "crime", "documentary",
+        "drama", "family", "fantasy", "history", "horror", "music", "mystery",
+        "romance", "science fiction", "sci-fi", "thriller", "war", "western",
+    ]
+    found_genres = []
+    message_lower = message.lower()
+    for genre in genres:
+        if genre in message_lower:
+            found_genres.append(genre)
+    return found_genres
 
+def get_movies_by_genre(genre, movies_df, count=5):
+    """Get movies based on a specific genre."""
+    try:
+        genre = genre.lower()
+        filtered_movies = []
+        for _, movie in movies_df.iterrows():
+            if isinstance(movie["genres"], list):
+                movie_genres = [g.lower() if isinstance(g, str) else "" for g in movie["genres"]]
+                if genre in movie_genres:
+                    filtered_movies.append(movie)
+            elif isinstance(movie["genres"], str):
+                if genre.lower() in movie["genres"].lower():
+                    filtered_movies.append(movie)
 
-@app.route("/api/register_user", methods=["POST"])
-def register_user():
+        if filtered_movies:
+            selected_movies = random.sample(filtered_movies, min(count, len(filtered_movies)))
+            recommendations = []
+            for movie in selected_movies:
+                poster_url = fetch_poster(movie['movie_id'])
+                recommendations.append({
+                    "title": movie["title"],
+                    "movie_id": int(movie["movie_id"]),
+                    "poster": poster_url if poster_url else "Poster unavailable",
+                })
+            return recommendations
+        return []
+    except Exception as e:
+        logger.error(f"Error getting movies by genre: {e}")
+        return []
+
+def get_recommendations_from_input(message, movies_df, cosine_sim, count=5):
+    """Generate recommendations based on user input."""
+    try:
+        # Check for genre recommendations
+        genres = extract_genre(message)
+        if genres:
+            return get_movies_by_genre(genres[0], movies_df, count)
+        
+        # Default to random recommendations if no specific intent
+        random_movies = movies_df.sample(count)
+        recommendations = []
+        for _, movie in random_movies.iterrows():
+            poster_url = fetch_poster(movie['movie_id'])
+            recommendations.append({
+                'title': movie['title'],
+                'movie_id': int(movie['movie_id']),
+                'poster': poster_url if poster_url else "Poster unavailable",
+            })
+        return recommendations
+    except Exception as e:
+        logger.error(f"Error getting recommendations from input: {e}")
+        return []
+
+def detect_intent(user_message):
+    labels = {
+        "recommend_movies": "User wants movie recommendations",
+        "find_similar": "User is asking for movies similar to another movie",
+        "get_movie_details": "User wants information about a specific movie",
+        "extract_genre": "User wants movie recommendations based on genre",
+    }
+    result = classifier(user_message, list(labels.values()))
+    best_match = result["labels"][0]
+    for key, value in labels.items():
+        if value == best_match:
+            return key
+    return "unknown"
+
+def extract_entities(user_message):
+    """Extract entities (e.g., movie titles) from the user message."""
+    entities = {"MOVIE": []}
+    results = ner_model(user_message)
+
+    current_entity = ""
+    movie_candidates = []
+
+    for res in results:
+        entity_text = res["word"].replace("##", "")
+        entity_label = res["entity"]
+        if entity_label.startswith("B-") or entity_label.startswith("I-"):
+            if res["word"].startswith("##"):
+                current_entity += entity_text
+            else:
+                if current_entity:
+                    movie_candidates.append(current_entity)
+                current_entity = entity_text
+
+    if current_entity:
+        movie_candidates.append(current_entity)
+
+    for movie in movie_candidates:
+        fuzzy_result = process.extractOne(
+            movie.lower(),
+            [title.lower() for title in MOVIE_TITLES],
+            scorer=fuzz.ratio,
+            score_cutoff=75,
+        )
+        if fuzzy_result:
+            match = fuzzy_result[0]
+            validated_movie = search_tmdb_movie(match) if match else None
+            if validated_movie:
+                # Convert TMDB ID to movie_id from your dataset if needed
+                movie_row = movies[movies['movie_id'] == validated_movie]
+                if movie_row.empty:
+                    continue
+                entities["MOVIE"].append(validated_movie)
+
+    if len(entities["MOVIE"]) == 1:
+        entities["MOVIE"] = entities["MOVIE"][0]
+
+    return entities
+
+def get_movie_details(movie_id_or_title):
+    """Get details for a specific movie based on ID or title."""
+    try:
+        if isinstance(movie_id_or_title, (int, str)) and str(movie_id_or_title).isdigit():
+            movie = movies[movies['movie_id'] == int(movie_id_or_title)]
+            if movie.empty:
+                return f"Sorry, I couldn't find details for the movie with ID {movie_id_or_title}.", None
+        else:
+            movie = movies[movies['title'].str.lower() == movie_id_or_title.lower()]
+            if movie.empty:
+                return f"Sorry, I couldn't find details for '{movie_id_or_title}'.", None
+
+        movie_data = movie.iloc[0].to_dict()
+        overview = movie_data.get('overview', "No overview available.")
+        poster_url = fetch_poster(movie_data['movie_id'])
+        return (
+            f"Here's what I know about '{movie_data['title']}': {overview}",
+            {
+                "title": movie_data["title"],
+                "movie_id": int(movie_data["movie_id"]),
+                "overview": overview,
+                "poster": poster_url if poster_url else "Poster unavailable",
+            },
+        )
+    except Exception as e:
+        logger.error(f"Error getting movie details: {e}")
+        return f"Error retrieving movie details.", None
+
+def format_recommendations(recommendations):
+    """Format the recommendation response."""
+    if recommendations:
+        movie_titles = [movie["title"] for movie in recommendations]
+        return f"Here are some movies you might enjoy: {', '.join(movie_titles)}"
+    return "I couldn't find any recommendations."
+
+def format_genre_movies(genre_movies, genre):
+    """Format the genre-based movie response."""
+    if genre_movies:
+        movie_titles = [movie["title"] for movie in genre_movies]
+        return f"Here are some {genre} movies: {', '.join(movie_titles)}"
+    return f"No movies found for genre '{genre}'."
+
+def format_similar_movies(similar_movies, movie_title):
+    """Format the similar movies response."""
+    if similar_movies:
+        movie_titles = [movie["title"] for movie in similar_movies]
+        return f"If you liked {movie_title}, you might also enjoy: {', '.join(movie_titles)}"
+    return f"Couldn't find similar movies for '{movie_title}'."
+    
+@app.route("/api/login", methods=["POST"])
+def login():
+    """Authenticate a user and update their last_login in MongoDB."""
     try:
         data = request.json
-        user_id = data.get("userId")
         username = data.get("username")
-        if not user_id or not username:
-            return jsonify({"error": "userId and username are required"}), 400
-        logger.info(f"Registered new user: userId={user_id}, username={username}")
+        password = data.get("password")
+
+        if not username or not password:
+            return jsonify({"error": "Username and password are required"}), 400
+
+        # Find the user in MongoDB
+        user = users_collection.find_one({"username": username, "password": password})
+        if not user:
+            return jsonify({"error": "Invalid username or password"}), 401
+
+        # Update last_login timestamp
+        users_collection.update_one(
+            {"username": username},
+            {"$set": {"last_login": datetime.utcnow().isoformat()}}
+        )
+
+        # Prepare user data to return (excluding password)
+        user_data = {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+            "last_login": user["last_login"]
+        }
+
+        logger.info(f"User logged in: username={username}, role={user['role']}")
+        return jsonify({"message": "Login successful", "user": user_data})
+    except Exception as e:
+        logger.error(f"Error during login: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+@app.route("/api/users", methods=["GET"])
+def get_users():
+    """Fetch all users from MongoDB for the admin dashboard."""
+    try:
+        users = list(users_collection.find({}, {"_id": 0}))  # Exclude MongoDB's _id field
+        return jsonify(users)
+    except Exception as e:
+        logger.error(f"Error fetching users: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+    
+@app.route('/api/user/<int:user_id>', methods=['GET'])
+def get_user(user_id):
+    try:
+        user = users_collection.find_one({"id": user_id}, {"_id": 0})  # Match by id field
+        if user:
+            return jsonify(user)
+        else:
+            abort(404, description="Resource not found")
+    except Exception as e:
+        logger.error(f"Error fetching user {user_id}: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+    
+    
+@app.route("/api/users/<int:user_id>", methods=["DELETE"])
+def delete_user(user_id):
+    """Delete a user by their ID."""
+    try:
+        result = users_collection.delete_one({"id": user_id})
+        if result.deleted_count == 0:
+            return jsonify({"error": "User not found"}), 404
+        logger.info(f"Deleted user with ID {user_id}")
+        return jsonify({"message": "User deleted successfully"})
+    except Exception as e:
+        logger.error(f"Error deleting user: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+    
+@app.route("/api/register_user", methods=["POST"])
+def register_user():
+    """Register a new user and save to MongoDB with default values for missing fields."""
+    try:
+        data = request.json
+        logger.info(f"Received registration request: {data}")
+
+        # Get the highest user ID in the database and increment it for a new user
+        highest_user = users_collection.find_one(sort=[("id", -1)])  # Sort by id descending
+        logger.info(f"Highest user: {highest_user}")
+        # Safely get the id; default to 0 if not present
+        highest_id = highest_user.get("id", 0) if highest_user else 0
+        next_user_id = highest_id + 1  # Increment the highest id
+        logger.info(f"Next user ID: {next_user_id}")
+
+        # Set default values if fields are missing
+        user_id = int(data.get("userId", next_user_id))  # Use next_user_id if userId is not provided
+        username = data.get("username", f"user_{user_id}")
+        password = data.get("password", "default_password_123")
+        role = data.get("role", "user")
+
+        logger.info(f"User data: userId={user_id}, username={username}, role={role}")
+
+        # Validate critical fields
+        if not username or username == f"user_{user_id}":
+            logger.warning("Validation failed: Username is required and cannot be the default value")
+            return jsonify({"error": "Username is required and cannot be the default value"}), 400
+        if not password or password == "default_password_123":
+            logger.warning("Validation failed: Password is required and cannot be the default value")
+            return jsonify({"error": "Password is required and cannot be the default value"}), 400
+
+        # Check if the user already exists
+        existing_user = users_collection.find_one({"username": username})
+        if existing_user:
+            logger.warning(f"Username already exists: {username}")
+            return jsonify({"error": "Username already exists"}), 400
+
+        # Create new user document
+        new_user = {
+            "id": user_id,
+            "username": username,
+            "password": password,  # In production, hash the password!
+            "role": role,
+            "last_login": None
+        }
+
+        # Insert into MongoDB
+        users_collection.insert_one(new_user)
+        logger.info(f"Registered new user: userId={user_id}, username={username}, role={role}")
         return jsonify({"message": "User registered successfully"})
     except Exception as e:
-        logger.error(f"Error registering user: {e}")
+        logger.error(f"Error registering user: {str(e)}", exc_info=True)
         return jsonify({"error": "Internal server error"}), 500
     
 # app.py
@@ -514,7 +854,7 @@ def get_movie(movie_id):
 def hybrid_recommend(user_id, movie_id):
     """API that combines Content-Based and Collaborative Filtering recommendations."""
     
-    collab_recommendations = get_collaborative_recommendations(user_id, n=5)
+    collab_recommendations = get_collaborative_recommendations(user_id, n=10)
 
     try:
         movie_row = movies[movies['movie_id'] == movie_id]
@@ -523,7 +863,7 @@ def hybrid_recommend(user_id, movie_id):
 
         movie_title = movie_row['title'].iloc[0]
 
-        recommended_titles = get_recommendations(movie_title, cosine_sim, movies)[:5]
+        recommended_titles = get_recommendations(movie_title, cosine_sim, movies)[:10]
 
         content_recommendations = []
         for title in recommended_titles:
@@ -556,11 +896,58 @@ def hybrid_recommend(user_id, movie_id):
 def initial_recommendations():
     """API endpoint for initial recommendations (popular movies)."""
     try:
-        recommendations = get_popular_movies(n=10)
+        recommendations = get_popular_movies(n=20)
         return jsonify({"recommendations": recommendations})
     except Exception as e:
         logger.error(f"Error fetching initial recommendations: {e}")
         return jsonify({"error": "Could not fetch initial recommendations"}), 500
+    
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """Handle chatbot interactions and return responses."""
+    try:
+        data = request.json
+        user_message = data.get('message', '').strip()
+        if not user_message:
+            return jsonify({"error": "Message is required"}), 400
+        
+        # Detect user intent
+        action = detect_intent(user_message)
+        
+        # Extract movie title and genre from user input
+        entities = extract_entities(user_message)
+        movie_id_or_title = entities.get("MOVIE")
+        genre = extract_genre(user_message)
+
+        # Handle different chatbot actions
+        if action == 'recommend_movies':
+            recommendations = get_recommendations_from_input(user_message, movies, cosine_sim)
+            response_text = format_recommendations(recommendations)
+            action_result = recommendations
+
+        elif action == 'extract_genre' and genre:
+            genre_movies = get_movies_by_genre(genre[0], movies)
+            response_text = format_genre_movies(genre_movies, genre[0])
+            action_result = genre_movies
+
+        elif action == 'get_movie_details' and movie_id_or_title:
+            response_text, action_result = get_movie_details(movie_id_or_title)
+        
+        elif action == 'find_similar' and movie_id_or_title:
+            similar_movies = get_recommendations_from_input(f"like {movie_id_or_title}", movies, cosine_sim)
+            response_text = format_similar_movies(similar_movies, movie_id_or_title)
+            action_result = similar_movies
+
+        else:
+            response_text = "I'm not sure what you're asking. Try asking for movie recommendations or details about a specific movie!"
+            action_result = []
+
+        return jsonify({"response": response_text, "action": action, "result": action_result})
+
+    except Exception as e:
+        logger.error(f"Error processing chat request: {e}")
+        return jsonify({"error": "Internal server error", "details": str(e)}), 500
+
 
 # Error handlers
 @app.errorhandler(404)

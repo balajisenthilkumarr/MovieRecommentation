@@ -1,57 +1,50 @@
 // src/pages/AdminDashboard.js
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
+import axios from "axios"; // Re-import axios for API calls
 import { motion } from "framer-motion";
 import { User, Trash2, LogOut } from "lucide-react";
 
 const AdminDashboard = () => {
-  // Mocked user data (instead of fetching from API)
-  const [users, setUsers] = useState([
-    { id: 1, username: "admin", role: "admin" },
-    { id: 2, username: "user1", role: "user" },
-    { id: 3, username: "user2", role: "user" },
-  ]);
-  
+  const [users, setUsers] = useState([]); // Remove mocked data, initialize as empty array
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const navigate = useNavigate();
 
-
-
-
-
+  // Check if user is admin
   const user = JSON.parse(localStorage.getItem("user"));
   useEffect(() => {
-    // Comment out the redirect for now to see the dashboard
-    // if (!user || user.role !== "admin") {
-    //   navigate("/AdminDasboard");
-    // }
+    if (!user || user.role !== "admin") {
+      navigate("/login"); // Fixed typo from "/AdminDasboard" to "/login"
+    }
   }, [user, navigate]);
 
-  // Remove the API fetch (since we're using mocked data)
-  // useEffect(() => {
-  //   const fetchUsers = async () => {
-  //     try {
-  //       const response = await axios.get("http://localhost:5000/api/users");
-  //       setUsers(response.data);
-  //     } catch (err) {
-  //       setError("Failed to fetch users");
-  //     }
-  //   };
-  //   fetchUsers();
-  // }, []);
+  // Fetch users dynamically from the backend
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        const response = await axios.get("http://localhost:5000/api/users");
+        setUsers(response.data);
+      } catch (err) {
+        setError("Failed to fetch users");
+        console.error("Error fetching users:", err);
+      }
+    };
+    fetchUsers();
+  }, []);
 
-  // Mock the delete functionality (without API call)
-  const handleDelete = (id) => {
+  // Delete user by ID (with API call)
+  const handleDelete = async (id) => {
     if (window.confirm("Are you sure you want to delete this user?")) {
       try {
-        // Simulate a successful delete by filtering the user out
-        setUsers(users.filter((user) => user.id !== id));
-        setSuccess("User deleted successfully");
+        const response = await axios.delete(`http://localhost:5000/api/users/${id}`);
+        setSuccess(response.data.message);
         setError("");
+        setUsers(users.filter((user) => user.id !== id)); // Update local state after deletion
       } catch (err) {
-        setError("Failed to delete user");
+        setError(err.response?.data?.error || "Failed to delete user");
         setSuccess("");
+        console.error("Error deleting user:", err);
       }
     }
   };
@@ -59,7 +52,7 @@ const AdminDashboard = () => {
   const handleLogout = () => {
     localStorage.removeItem("user");
     localStorage.removeItem("userId");
-    navigate("/login"); // Fixed the typo from "/AdminDashboart" to "/login"
+    navigate("/login");
   };
 
   return (
