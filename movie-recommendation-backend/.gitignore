@@ -1,4 +1,4 @@
-# Ignore dataset folder
-dataset/*
-#pickelfile
-*.pkl
+# # Ignore dataset folder
+# dataset/*
+# #pickelfile
+# *.pkl
