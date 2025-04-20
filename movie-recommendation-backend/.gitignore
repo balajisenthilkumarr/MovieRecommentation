@@ -1,0 +1,6 @@
+# # Ignore dataset folder
+# dataset/*
+# #pickelfile
+# *.pkl
+  *.env
+  *.venv
